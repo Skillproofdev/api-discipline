@@ -1,6 +1,6 @@
 ---
 name: api-discipline
-description: Use when the user asks to design an API, add or extend an endpoint, review an OpenAPI/Swagger spec, or asks REST convention questions (naming, versioning, pagination, status codes, PUT vs PATCH). Enforces design discipline on any REST/HTTP API work: consistent resource naming, an error model on every endpoint, conventions declared once and reused, correct HTTP semantics, breaking-change checks on edits, and validator-clean OpenAPI 3.1 output with a cross-endpoint consistency audit before delivery. Do not trigger for GraphQL-only work, client SDK/code generation from an existing spec, or API security testing.
+description: "Use when the user asks to design an API, add or extend an endpoint, review an OpenAPI/Swagger spec, or asks REST convention questions (naming, versioning, pagination, status codes, PUT vs PATCH). Enforces design discipline on any REST/HTTP API work: consistent resource naming, an error model on every endpoint, conventions declared once and reused, correct HTTP semantics, breaking-change checks on edits, and validator-clean OpenAPI 3.1 output with a cross-endpoint consistency audit before delivery. Do not trigger for GraphQL-only work, client SDK/code generation from an existing spec, or API security testing."
 ---
 
 # API Discipline
