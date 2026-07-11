@@ -1,0 +1,3 @@
+# Benchmark ruleset for spectral cross-check (metric 1).
+# `spectral:oas` is the built-in OpenAPI ruleset; severity defaults apply.
+extends: ["spectral:oas"]

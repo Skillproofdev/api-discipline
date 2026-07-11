@@ -1,0 +1,951 @@
+openapi: 3.1.0
+info:
+  title: Trackle API
+  description: >
+    Public HTTP API for Trackle, a team task tracker. Backs the first-party
+    web client and third-party integrations.
+  version: "1.0.0"
+  license:
+    name: Proprietary
+servers:
+  - url: https://api.trackle.io/v1
+    description: Production
+tags:
+  - name: Projects
+    description: Create, read, update, delete, and archive projects.
+  - name: Members
+    description: Invite, list, re-role, and remove project members.
+  - name: Tasks
+    description: Create, read, update, delete, assign, and complete tasks.
+  - name: Comments
+    description: Add, edit, delete, and list comments on a task.
+
+paths:
+  /projects:
+    get:
+      operationId: listProjects
+      tags: [Projects]
+      summary: List projects in the caller's workspace
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: archived
+          in: query
+          description: Filter by archived state. Omit to return non-archived projects only.
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          description: Sort key. Prefix with `-` for descending.
+          schema:
+            type: string
+            enum: [name, -name, created_at, -created_at]
+            default: -created_at
+      responses:
+        '200':
+          description: A page of projects.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: createProject
+      tags: [Projects]
+      summary: Create a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectCreate'
+      responses:
+        '201':
+          description: Project created.
+          headers:
+            Location:
+              description: URL of the new project.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /projects/{projectId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getProject
+      tags: [Projects]
+      summary: Get a project
+      responses:
+        '200':
+          description: The project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateProject
+      tags: [Projects]
+      summary: Update a project (partial update, merge-patch semantics)
+      description: >
+        Applies a JSON Merge Patch (RFC 7396). Send only the fields to change,
+        including renaming, changing description/color, or archiving via
+        `archived: true`.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdate'
+      responses:
+        '200':
+          description: The updated project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deleteProject
+      tags: [Projects]
+      summary: Delete a project
+      responses:
+        '204':
+          description: Project deleted. No content.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectId}/members:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: listProjectMembers
+      tags: [Members]
+      summary: List members of a project
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: role
+          in: query
+          description: Filter by role.
+          schema:
+            $ref: '#/components/schemas/MemberRole'
+      responses:
+        '200':
+          description: A page of members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: inviteProjectMember
+      tags: [Members]
+      summary: Invite a member to a project by email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberInvite'
+      responses:
+        '201':
+          description: Member invited.
+          headers:
+            Location:
+              description: URL of the new member.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >
+            This email is already a member of the project.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /projects/{projectId}/members/{memberId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MemberId'
+    patch:
+      operationId: updateProjectMember
+      tags: [Members]
+      summary: Change a member's role (merge-patch semantics)
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/MemberUpdate'
+      responses:
+        '200':
+          description: The updated member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >
+            This change would leave the project with no owner.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: removeProjectMember
+      tags: [Members]
+      summary: Remove a member from a project
+      responses:
+        '204':
+          description: Member removed. No content.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >
+            The last owner of a project cannot be removed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /projects/{projectId}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: listTasks
+      tags: [Tasks]
+      summary: List tasks in a project
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+        - name: assignee_id
+          in: query
+          description: Filter to tasks assigned to this member id.
+          schema:
+            type: string
+            format: uuid
+        - name: priority
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskPriority'
+        - name: due_before
+          in: query
+          description: Filter to tasks due before this timestamp (exclusive).
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          description: Sort key. Prefix with `-` for descending.
+          schema:
+            type: string
+            enum:
+              - due_date
+              - -due_date
+              - priority
+              - -priority
+              - created_at
+              - -created_at
+            default: -created_at
+      responses:
+        '200':
+          description: A page of tasks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: createTask
+      tags: [Tasks]
+      summary: Create a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskCreate'
+      responses:
+        '201':
+          description: Task created.
+          headers:
+            Location:
+              description: URL of the new task.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /projects/{projectId}/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      operationId: getTask
+      tags: [Tasks]
+      summary: Get a task
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateTask
+      tags: [Tasks]
+      summary: >
+        Update a task (partial update, merge-patch semantics). Also used to
+        assign/unassign (`assignee_id`), complete/reopen (`status`), and
+        change any other field.
+      description: >
+        Applies a JSON Merge Patch (RFC 7396). To assign, set `assignee_id`
+        to a member id; to unassign, set `assignee_id` to `null`. To
+        complete a task, set `status: done`; to reopen, set `status: todo`
+        or `status: in_progress`.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/TaskUpdate'
+      responses:
+        '200':
+          description: The updated task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: >
+            Semantic validation failure, e.g. `assignee_id` does not refer to
+            a member of this project.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deleteTask
+      tags: [Tasks]
+      summary: Delete a task
+      responses:
+        '204':
+          description: Task deleted. No content.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /projects/{projectId}/tasks/{taskId}/comments:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      operationId: listTaskComments
+      tags: [Comments]
+      summary: List comments on a task, oldest first
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of comments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createTaskComment
+      tags: [Comments]
+      summary: Add a comment to a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreate'
+      responses:
+        '201':
+          description: Comment created.
+          headers:
+            Location:
+              description: URL of the new comment.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /projects/{projectId}/tasks/{taskId}/comments/{commentId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+      - $ref: '#/components/parameters/CommentId'
+    patch:
+      operationId: updateTaskComment
+      tags: [Comments]
+      summary: Edit a comment (author only, merge-patch semantics)
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/CommentUpdate'
+      responses:
+        '200':
+          description: The updated comment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deleteTaskComment
+      tags: [Comments]
+      summary: Delete a comment (author only)
+      responses:
+        '204':
+          description: Comment deleted. No content.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+      description: Token-based auth issued and validated by the API gateway.
+
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    MemberId:
+      name: memberId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CommentId:
+      name: commentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque pagination cursor from a previous response's `pagination.next_cursor`. Omit for the first page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      description: Maximum items to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  schemas:
+    Error:
+      description: RFC 9457 Problem Details.
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: A URI identifying the problem type.
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+        status:
+          type: integer
+          description: The HTTP status code.
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri
+          description: A URI identifying this specific occurrence.
+        errors:
+          type: array
+          description: Optional field-level validation errors.
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    Pagination:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` to fetch the next page. `null` on the last page.
+        has_more:
+          type: boolean
+
+    MemberRole:
+      type: string
+      enum: [owner, editor, viewer]
+
+    TaskStatus:
+      type: string
+      enum: [todo, in_progress, done]
+
+    TaskPriority:
+      type: string
+      enum: [low, normal, high, urgent]
+
+    Project:
+      type: object
+      required: [id, name, archived, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: [string, "null"]
+        color:
+          type: string
+          description: Hex color label, e.g. `#4287f5`.
+          pattern: '^#[0-9a-fA-F]{6}$'
+        archived:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ProjectCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+
+    ProjectUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: [string, "null"]
+        color:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+        archived:
+          type: boolean
+
+    ProjectListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Member:
+      type: object
+      required: [id, email, role, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/MemberRole'
+        created_at:
+          type: string
+          format: date-time
+
+    MemberInvite:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/MemberRole'
+
+    MemberUpdate:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: '#/components/schemas/MemberRole'
+
+    MemberListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Task:
+      type: object
+      required: [id, project_id, title, status, priority, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 500
+        description:
+          type: [string, "null"]
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        due_date:
+          type: [string, "null"]
+          format: date-time
+        assignee_id:
+          type: [string, "null"]
+          format: uuid
+          description: Id of the assigned member. `null` if unassigned.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskCreate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 500
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        due_date:
+          type: string
+          format: date-time
+        assignee_id:
+          type: string
+          format: uuid
+          description: Must be a member of this project.
+
+    TaskUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 500
+        description:
+          type: [string, "null"]
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        due_date:
+          type: [string, "null"]
+          format: date-time
+        assignee_id:
+          type: [string, "null"]
+          format: uuid
+          description: Set to a member id to assign, `null` to unassign. Must be a member of this project.
+
+    TaskListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Comment:
+      type: object
+      required: [id, task_id, author_id, body, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        author_id:
+          type: string
+          format: uuid
+        body:
+          type: string
+          maxLength: 10000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CommentCreate:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          maxLength: 10000
+
+    CommentUpdate:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          maxLength: 10000
+
+    CommentListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+  responses:
+    BadRequest:
+      description: Malformed request (bad syntax, unknown parameter, etc).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid authentication token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated, but not permitted to perform this action.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: Request is well-formed but fails semantic validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+security:
+  - bearerAuth: []

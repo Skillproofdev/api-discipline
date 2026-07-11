@@ -1,0 +1,926 @@
+openapi: 3.1.0
+info:
+  title: Ledgerline API
+  description: >
+    Public merchant-facing HTTP API for Ledgerline card payment processing.
+    Server-to-server integration; several merchants are high-volume with
+    aggressive client-side timeout/retry logic.
+  version: "1.0.0"
+  license:
+    name: Proprietary
+servers:
+  - url: https://api.ledgerline.io/v1
+    description: Production
+tags:
+  - name: Charges
+    description: Create and inspect charges against a customer's stored payment method.
+  - name: Refunds
+    description: Refund a charge, fully or in installments.
+  - name: Webhook Endpoints
+    description: Register and manage URLs that receive event notifications.
+  - name: Deliveries
+    description: Inspect and retry webhook delivery attempts.
+
+paths:
+  /charges:
+    get:
+      operationId: listCharges
+      tags: [Charges]
+      summary: List charges
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ChargeStatus'
+        - name: created_after
+          in: query
+          description: Only charges created at or after this timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          description: Only charges created before this timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at, -created_at]
+            default: -created_at
+      responses:
+        '200':
+          description: A page of charges.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChargeListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: createCharge
+      tags: [Charges]
+      summary: Charge a customer's stored payment method
+      description: >
+        **Safe to retry.** Requires an `Idempotency-Key` header. If a charge
+        was already created for this key, the original charge is returned
+        unchanged (same status code, no new charge, no second capture) —
+        this is how the API guarantees that a client timeout-and-retry with
+        an identical payload never double-charges. See the `Idempotency-Key`
+        parameter and the `409` response for full semantics.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChargeCreate'
+      responses:
+        '201':
+          description: >
+            Charge created (or, on a retried request with a previously-used
+            idempotency key and identical payload, the original charge is
+            returned with this same status code).
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Idempotent-Replayed:
+              description: >
+                `true` if this response is a replay of a prior request with
+                the same idempotency key (no new charge was created).
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: >
+            The `Idempotency-Key` was already used with a **different**
+            request payload. Retries must reuse the exact original payload;
+            generate a new key for a genuinely new charge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /charges/{chargeId}:
+    parameters:
+      - $ref: '#/components/parameters/ChargeId'
+    get:
+      operationId: getCharge
+      tags: [Charges]
+      summary: Get a charge
+      responses:
+        '200':
+          description: The charge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charge'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /charges/{chargeId}/refunds:
+    parameters:
+      - $ref: '#/components/parameters/ChargeId'
+    get:
+      operationId: listChargeRefunds
+      tags: [Refunds]
+      summary: List refunds issued against a charge
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of refunds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createChargeRefund
+      tags: [Refunds]
+      summary: Refund a charge, fully or partially
+      description: >
+        **Safe to retry.** Requires an `Idempotency-Key` header, with the
+        same replay semantics as `POST /charges` — a retried refund request
+        never double-refunds. A charge may be refunded multiple times
+        (each a distinct idempotency key) up to its original amount.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundCreate'
+      responses:
+        '201':
+          description: Refund created (or replayed — see `Idempotent-Replayed`).
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Idempotent-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Refund'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The `Idempotency-Key` was already used with a different payload.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: >
+            Semantic validation failure — most commonly `amount` exceeds the
+            charge's remaining refundable amount (`type`:
+            `https://errors.ledgerline.io/refund-amount-exceeds-available`).
+            The `Error.available_amount` extension field carries the
+            currently refundable amount in minor units so the client can
+            correct and retry without another round trip.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /charges/{chargeId}/refunds/{refundId}:
+    parameters:
+      - $ref: '#/components/parameters/ChargeId'
+      - $ref: '#/components/parameters/RefundId'
+    get:
+      operationId: getChargeRefund
+      tags: [Refunds]
+      summary: Get a refund
+      responses:
+        '200':
+          description: The refund.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Refund'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints:
+    get:
+      operationId: listWebhookEndpoints
+      tags: [Webhook Endpoints]
+      summary: List registered webhook endpoints
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of webhook endpoints. `secret` is never included in list responses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Register a webhook endpoint
+      description: >
+        The response includes `secret` in full. This is the only time the
+        secret is ever returned in full except immediately after a rotation
+        — store it now.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointCreate'
+      responses:
+        '201':
+          description: Endpoint registered.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWithSecret'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /webhook-endpoints/{endpointId}:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    get:
+      operationId: getWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Get a webhook endpoint
+      responses:
+        '200':
+          description: The endpoint. `secret` is never included here — use rotation to see a new one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: replaceWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Replace the full endpoint config (URL + event types + active flag)
+      description: >
+        For the "re-submit the whole form" dashboard flow. Idempotent by
+        HTTP semantics: submitting the same body twice leaves the endpoint
+        in the same state both times, no `Idempotency-Key` needed. All three
+        fields are required — this fully replaces the config, it does not
+        merge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointReplace'
+      responses:
+        '200':
+          description: The replaced endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    patch:
+      operationId: updateWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Update part of an endpoint config (e.g. just `active`, or just `url`)
+      description: >
+        For the "toggle one field" dashboard flow. JSON Merge Patch (RFC
+        7396) semantics — send only the field(s) changing. Idempotent by
+        HTTP semantics: patching the same field to the same value twice
+        leaves the same end state, no `Idempotency-Key` needed.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointUpdate'
+      responses:
+        '200':
+          description: The updated endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deleteWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Delete a webhook endpoint
+      responses:
+        '204':
+          description: Endpoint deleted. No content.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/secret-rotations:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    post:
+      operationId: rotateWebhookEndpointSecret
+      tags: [Webhook Endpoints]
+      summary: Rotate the endpoint's signing secret
+      description: >
+        Generates a new signing secret and immediately invalidates the old
+        one — deliveries in flight signed with the old secret are not
+        retroactively re-signed. Does not require deleting/recreating the
+        endpoint. Modeled as a sub-resource creation (a new "rotation"),
+        not a verb, since each call produces a new, distinct secret and is
+        therefore not idempotent — do not retry automatically on timeout,
+        confirm the endpoint's current state first via `GET`.
+      responses:
+        '201':
+          description: Secret rotated. The new secret is shown here in full, once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWithSecret'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    get:
+      operationId: listWebhookDeliveries
+      tags: [Deliveries]
+      summary: List delivery attempts for an endpoint
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          description: Filter, e.g. `status=failed` for failed-only.
+          schema:
+            $ref: '#/components/schemas/DeliveryStatus'
+      responses:
+        '200':
+          description: A page of delivery attempts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/deliveries/{deliveryId}:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+      - $ref: '#/components/parameters/DeliveryId'
+    get:
+      operationId: getWebhookDelivery
+      tags: [Deliveries]
+      summary: Get a delivery attempt
+      responses:
+        '200':
+          description: The delivery attempt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/deliveries/{deliveryId}/retries:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+      - $ref: '#/components/parameters/DeliveryId'
+    post:
+      operationId: retryWebhookDelivery
+      tags: [Deliveries]
+      summary: Manually trigger a re-send of a delivery
+      description: >
+        Only valid for deliveries whose `status` is `failed`. Queues a new
+        delivery attempt for the same event; the automatic 24h backoff
+        retry schedule is independent of this and continues regardless.
+        Async — the send happens after this call returns, so this responds
+        `202` with the new attempt in `pending` state; poll its `Location`
+        or `GET` it to see the outcome.
+      responses:
+        '202':
+          description: Retry queued.
+          headers:
+            Location:
+              description: URL of the new delivery attempt.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Delivery'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The delivery is not in `failed` status and cannot be retried.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+      description: Merchant API secret key, sent as a bearer token.
+
+  parameters:
+    ChargeId:
+      name: chargeId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^ch_[a-zA-Z0-9]+$'
+    RefundId:
+      name: refundId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^re_[a-zA-Z0-9]+$'
+    EndpointId:
+      name: endpointId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^we_[a-zA-Z0-9]+$'
+    DeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^dl_[a-zA-Z0-9]+$'
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque pagination cursor from a previous response's `pagination.next_cursor`. Omit for the first page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      description: Maximum items to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Client-generated unique string (up to 255 chars) identifying this
+        logical operation. Reusing a key with an identical request body
+        returns the original result without re-executing it. Reusing a key
+        with a different body is a `409`. Keys are scoped to the merchant
+        and expire after 24h.
+      schema:
+        type: string
+        maxLength: 255
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Same semantics as on `POST /charges`; optional here since duplicate endpoint registration is a low-stakes, easily-visible mistake rather than a duplicated money movement.
+      schema:
+        type: string
+        maxLength: 255
+
+  schemas:
+    Error:
+      description: RFC 9457 Problem Details, with two payments-specific extension fields.
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri
+        available_amount:
+          type: integer
+          description: >
+            Extension field. Present on refund-amount-exceeded errors: the
+            currently refundable amount in minor units.
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    Pagination:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: [string, "null"]
+        has_more:
+          type: boolean
+
+    ChargeStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+
+    Charge:
+      type: object
+      required: [id, amount, currency, payment_method, status, refunded_amount, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: '^ch_[a-zA-Z0-9]+$'
+        amount:
+          type: integer
+          minimum: 1
+          description: Amount in minor units (e.g. cents).
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+          pattern: '^[A-Z]{3}$'
+        payment_method:
+          type: string
+          description: Reference to the customer's stored payment method.
+        statement_descriptor:
+          type: [string, "null"]
+        status:
+          $ref: '#/components/schemas/ChargeStatus'
+        failure_reason:
+          type: [string, "null"]
+        refunded_amount:
+          type: integer
+          description: Sum of succeeded refunds against this charge, in minor units. Refundable remainder = `amount - refunded_amount`.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChargeCreate:
+      type: object
+      required: [amount, currency, payment_method]
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        payment_method:
+          type: string
+        statement_descriptor:
+          type: string
+          maxLength: 22
+
+    ChargeListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Charge'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    RefundStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+
+    RefundReason:
+      type: string
+      enum: [duplicate, fraudulent, requested_by_customer]
+
+    Refund:
+      type: object
+      required: [id, charge_id, amount, status, reason, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: '^re_[a-zA-Z0-9]+$'
+        charge_id:
+          type: string
+          pattern: '^ch_[a-zA-Z0-9]+$'
+        amount:
+          type: integer
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/RefundStatus'
+        reason:
+          $ref: '#/components/schemas/RefundReason'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    RefundCreate:
+      type: object
+      required: [amount, reason]
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          description: Must not exceed the charge's remaining refundable amount.
+        reason:
+          $ref: '#/components/schemas/RefundReason'
+
+    RefundListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Refund'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    WebhookEventType:
+      type: string
+      enum: [charge.succeeded, charge.failed, refund.succeeded, refund.failed]
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, event_types, active, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: '^we_[a-zA-Z0-9]+$'
+        url:
+          type: string
+          format: uri
+          description: Must be HTTPS.
+        event_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    WebhookEndpointWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/WebhookEndpoint'
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: Shown in full only in this response — on creation or immediately after rotation.
+
+    WebhookEndpointCreate:
+      type: object
+      required: [url, event_types]
+      properties:
+        url:
+          type: string
+          format: uri
+        event_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+          default: true
+
+    WebhookEndpointReplace:
+      type: object
+      required: [url, event_types, active]
+      properties:
+        url:
+          type: string
+          format: uri
+        event_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+
+    WebhookEndpointUpdate:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        event_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+
+    WebhookEndpointListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEndpoint'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    DeliveryStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+
+    Delivery:
+      type: object
+      required: [id, endpoint_id, event_type, attempt_number, status, created_at]
+      properties:
+        id:
+          type: string
+          pattern: '^dl_[a-zA-Z0-9]+$'
+        endpoint_id:
+          type: string
+          pattern: '^we_[a-zA-Z0-9]+$'
+        event_type:
+          $ref: '#/components/schemas/WebhookEventType'
+        attempt_number:
+          type: integer
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/DeliveryStatus'
+        response_status_code:
+          type: [integer, "null"]
+          description: HTTP status code the endpoint responded with, if any.
+        duration_ms:
+          type: [integer, "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    DeliveryListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Delivery'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated, but not permitted to perform this action.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: Request is well-formed but fails semantic validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+security:
+  - bearerAuth: []

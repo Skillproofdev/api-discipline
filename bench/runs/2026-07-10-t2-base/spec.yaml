@@ -1,0 +1,907 @@
+openapi: 3.1.0
+info:
+  title: Ledgerline API
+  version: "1.0.0"
+  description: >
+    Public merchant-facing HTTP API for Ledgerline card payment processing.
+    Merchants integrate server-to-server, several at high volume with
+    aggressive client-side timeout/retry. This is a v1, versioned contract.
+  contact:
+    name: Ledgerline API team
+    email: api@ledgerline.com
+servers:
+  - url: https://api.ledgerline.com/v1
+    description: Production
+
+security:
+  - apiKeyAuth: []
+
+tags:
+  - name: Charges
+  - name: Refunds
+  - name: Webhook Endpoints
+  - name: Deliveries
+
+paths:
+  /charges:
+    get:
+      operationId: listCharges
+      tags: [Charges]
+      summary: List charges
+      description: >
+        Returns the merchant's charges, paged, newest first by default.
+        Supports high-volume pagination via cursor.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageCursor'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ChargeStatus'
+        - name: createdAfter
+          in: query
+          description: Return charges created on or after this instant (inclusive).
+          schema:
+            type: string
+            format: date-time
+        - name: createdBefore
+          in: query
+          description: Return charges created before this instant (exclusive).
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Page of charges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChargeListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createCharge
+      tags: [Charges]
+      summary: Create a charge
+      description: >
+        Charges a customer's stored payment method. Requires an
+        `Idempotency-Key` header — see the header definition and the
+        "Idempotent charge creation" section in notes for the exact retry
+        contract. This is the mechanism that makes client-side timeout/retry
+        safe against double-charging.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChargeCreateRequest'
+      responses:
+        '201':
+          description: >
+            Charge created (first time this idempotency key was seen), or
+            the original charge for a safe retry (see the `Idempotent-Replay`
+            response header).
+          headers:
+            Location:
+              schema:
+                type: string
+            Idempotent-Replay:
+              description: >
+                "true" if this response was served from a stored result for
+                a previously-seen Idempotency-Key rather than by creating a
+                new charge; absent on the original (first) response.
+              schema:
+                type: string
+                enum: ["true"]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChargeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: >
+            The Idempotency-Key was already used with a different request
+            body. The original charge was NOT affected; retry with a new key
+            or the original body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Request is well-formed but was declined (card/processor decline).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /charges/{chargeId}:
+    parameters:
+      - $ref: '#/components/parameters/ChargeId'
+    get:
+      operationId: getCharge
+      tags: [Charges]
+      summary: Get a charge
+      description: Returns a single charge by ID, including its refundedAmount so far.
+      responses:
+        '200':
+          description: The charge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChargeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /charges/{chargeId}/refunds:
+    parameters:
+      - $ref: '#/components/parameters/ChargeId'
+    get:
+      operationId: listRefundsForCharge
+      tags: [Refunds]
+      summary: List refunds for a charge
+      description: Returns all refunds issued against this charge, paged, newest first.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: Page of refunds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createRefund
+      tags: [Refunds]
+      summary: Refund a charge, fully or partially
+      description: >
+        Creates a refund against the charge. May be called multiple times on
+        the same charge as long as the sum of successful refunds does not
+        exceed the charge amount. Also accepts an `Idempotency-Key`, for the
+        same reason charge creation does — refund requests are money-moving
+        and merchant clients retry them under timeout the same way.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundCreateRequest'
+      responses:
+        '201':
+          description: Refund created (or replayed — see Idempotent-Replay header)
+          headers:
+            Location:
+              schema:
+                type: string
+            Idempotent-Replay:
+              schema:
+                type: string
+                enum: ["true"]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency-Key reused with a different request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: >
+            Refund amount exceeds the charge's remaining un-refunded amount,
+            or the charge is not in a refundable state (e.g. not yet
+            succeeded). Machine-readable via `error.code`
+            (`refund_exceeds_remaining_amount` /
+            `charge_not_refundable`); never a 500.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundAmountError'
+
+  /refunds/{refundId}:
+    parameters:
+      - $ref: '#/components/parameters/RefundId'
+    get:
+      operationId: getRefund
+      tags: [Refunds]
+      summary: Get a refund
+      description: Returns a single refund by ID.
+      responses:
+        '200':
+          description: The refund
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints:
+    get:
+      operationId: listWebhookEndpoints
+      tags: [Webhook Endpoints]
+      summary: List registered webhook endpoints
+      description: Returns the merchant's registered webhook endpoints, paged. Never includes signing secrets.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: Page of webhook endpoints
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Register a webhook endpoint
+      description: >
+        Creates the endpoint and generates its signing secret. The secret is
+        returned in full only in this response — subsequent reads never
+        include it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointCreateRequest'
+      responses:
+        '201':
+          description: Endpoint created
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWithSecretResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /webhook-endpoints/{endpointId}:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    get:
+      operationId: getWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Get a webhook endpoint
+      description: Never includes the signing secret; use the create or rotate-secret response for that.
+      responses:
+        '200':
+          description: The endpoint
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: replaceWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Replace the full endpoint config (URL, event types, active flag)
+      description: >
+        Full-replace semantics: the request body is the complete desired
+        config and all three fields are required. Naturally idempotent —
+        submitting the identical body twice (e.g. a merchant dashboard form
+        re-post after a client timeout) leaves the endpoint in the same
+        state and returns 200 both times with no duplicate side effects.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointReplaceRequest'
+      responses:
+        '200':
+          description: Updated endpoint
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Update one or more endpoint fields (e.g. just the active flag, or just the URL)
+      description: >
+        Partial-update semantics: only fields present in the request body
+        change. Setting a field to its current value is a no-op; resubmitting
+        the same PATCH body twice is safe and returns 200 both times with the
+        same resulting state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointUpdateRequest'
+      responses:
+        '200':
+          description: Updated endpoint
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Delete a webhook endpoint
+      description: Stops delivery and permanently deletes delivery history for this endpoint.
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/secret/rotate:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    post:
+      operationId: rotateWebhookEndpointSecret
+      tags: [Webhook Endpoints]
+      summary: Rotate the endpoint's signing secret
+      description: >
+        Generates a new signing secret and immediately invalidates the old
+        one — deliveries in flight that were signed with the old secret are
+        not re-signed. The new secret is returned in full only in this
+        response. Does not require deleting/recreating the endpoint.
+      responses:
+        '200':
+          description: New secret generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWithSecretResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+    get:
+      operationId: listDeliveries
+      tags: [Deliveries]
+      summary: List delivery attempts for an endpoint
+      description: Returns delivery attempts for this endpoint, paged, newest first. Optionally filtered to failed-only.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageCursor'
+        - name: failedOnly
+          in: query
+          description: If true, return only deliveries whose most recent attempt failed.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Page of deliveries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhook-endpoints/{endpointId}/deliveries/{deliveryId}/resend:
+    parameters:
+      - $ref: '#/components/parameters/EndpointId'
+      - $ref: '#/components/parameters/DeliveryId'
+    post:
+      operationId: resendDelivery
+      tags: [Deliveries]
+      summary: Manually trigger a re-send of a specific delivery
+      description: >
+        Intended for after a merchant fixes their receiver following failed
+        automatic retries. Creates a new delivery attempt record for the
+        same event; does not affect the original attempt's history. Allowed
+        on any delivery regardless of the endpoint's automatic 24h retry
+        window state.
+      responses:
+        '202':
+          description: >
+            Re-send accepted and queued. The actual delivery happens
+            asynchronously; poll GET on the delivery list or use webhook
+            delivery events to observe the result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Merchant secret API key, sent as "Bearer sk_live_..." or "Bearer sk_test_...".'
+
+  parameters:
+    ChargeId:
+      name: chargeId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^ch_[A-Za-z0-9]+$'
+    RefundId:
+      name: refundId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^re_[A-Za-z0-9]+$'
+    EndpointId:
+      name: endpointId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^we_[A-Za-z0-9]+$'
+    DeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^del_[A-Za-z0-9]+$'
+    PageSize:
+      name: pageSize
+      in: query
+      description: Max items per page. Default 25, max 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    PageCursor:
+      name: pageCursor
+      in: query
+      description: Opaque cursor from a previous page's meta.nextCursor. Omit for the first page.
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Client-generated unique string (we recommend a UUID) identifying this
+        creation attempt. Reusing the same key with the same request body
+        returns the original result without creating a new resource — safe
+        to send on every automatic retry. Keys are scoped per merchant and
+        remembered for 24 hours.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  responses:
+    BadRequest:
+      description: Malformed request or validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource does not exist or does not belong to this merchant
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      description: Uniform error envelope returned by every endpoint on failure.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+
+    RefundAmountError:
+      description: Error envelope for refund-amount/state failures, with the remaining refundable amount attached so clients can self-correct.
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [refund_exceeds_remaining_amount, charge_not_refundable]
+            message:
+              type: string
+            remainingAmount:
+              type: integer
+              description: Remaining refundable amount in minor units, present when code is refund_exceeds_remaining_amount.
+
+    PageMeta:
+      type: object
+      required: [nextCursor, hasMore]
+      properties:
+        nextCursor:
+          type: string
+          nullable: true
+        hasMore:
+          type: boolean
+
+    ChargeStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+
+    Charge:
+      type: object
+      required: [id, amount, currency, paymentMethod, statementDescriptor, status, failureReason, refundedAmount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^ch_[A-Za-z0-9]+$'
+        amount:
+          type: integer
+          minimum: 1
+          description: Charge amount in integer minor units (e.g. cents).
+        currency:
+          type: string
+          description: ISO 4217 currency code, lowercase.
+          pattern: '^[a-z]{3}$'
+        paymentMethod:
+          type: string
+          description: Reference to the customer's stored payment method.
+        statementDescriptor:
+          type: string
+          nullable: true
+          maxLength: 22
+        status:
+          $ref: '#/components/schemas/ChargeStatus'
+        failureReason:
+          type: string
+          nullable: true
+          description: Present only when status is failed.
+        refundedAmount:
+          type: integer
+          description: Sum of successful refunds against this charge so far, in minor units.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ChargeCreateRequest:
+      type: object
+      required: [amount, currency, paymentMethod]
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+        currency:
+          type: string
+          pattern: '^[a-z]{3}$'
+        paymentMethod:
+          type: string
+        statementDescriptor:
+          type: string
+          maxLength: 22
+
+    ChargeResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Charge'
+
+    ChargeListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Charge'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+
+    RefundStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+
+    RefundReason:
+      type: string
+      enum: [duplicate, fraudulent, requested_by_customer]
+
+    Refund:
+      type: object
+      required: [id, chargeId, amount, status, reason, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^re_[A-Za-z0-9]+$'
+        chargeId:
+          type: string
+          pattern: '^ch_[A-Za-z0-9]+$'
+        amount:
+          type: integer
+          minimum: 1
+          description: Refund amount in integer minor units.
+        status:
+          $ref: '#/components/schemas/RefundStatus'
+        reason:
+          $ref: '#/components/schemas/RefundReason'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RefundCreateRequest:
+      type: object
+      required: [reason]
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          description: Amount to refund in minor units. Omit to refund the full remaining amount.
+        reason:
+          $ref: '#/components/schemas/RefundReason'
+
+    RefundResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Refund'
+
+    RefundListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Refund'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+
+    WebhookEventType:
+      type: string
+      enum:
+        - charge.succeeded
+        - charge.failed
+        - refund.succeeded
+        - refund.failed
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, eventTypes, active, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^we_[A-Za-z0-9]+$'
+        url:
+          type: string
+          format: uri
+          description: Must be HTTPS.
+        eventTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WebhookEndpointCreateRequest:
+      type: object
+      required: [url, eventTypes]
+      properties:
+        url:
+          type: string
+          format: uri
+        eventTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+          default: true
+
+    WebhookEndpointReplaceRequest:
+      type: object
+      description: Full replacement — all fields required.
+      required: [url, eventTypes, active]
+      properties:
+        url:
+          type: string
+          format: uri
+        eventTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+
+    WebhookEndpointUpdateRequest:
+      type: object
+      description: Partial update — at least one field required, only provided fields change.
+      minProperties: 1
+      properties:
+        url:
+          type: string
+          format: uri
+        eventTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+          minItems: 1
+        active:
+          type: boolean
+
+    WebhookEndpointResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/WebhookEndpoint'
+
+    WebhookEndpointListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEndpoint'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+
+    WebhookEndpointWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/WebhookEndpoint'
+        - type: object
+          required: [signingSecret]
+          properties:
+            signingSecret:
+              type: string
+              description: >
+                Full signing secret. Only ever returned here (create and
+                rotate responses); GET/list/PATCH/PUT never include it.
+
+    WebhookEndpointWithSecretResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/WebhookEndpointWithSecret'
+
+    Delivery:
+      type: object
+      required: [id, endpointId, eventType, attemptNumber, success, responseCode, attemptedAt, nextRetryAt]
+      properties:
+        id:
+          type: string
+          pattern: '^del_[A-Za-z0-9]+$'
+        endpointId:
+          type: string
+          pattern: '^we_[A-Za-z0-9]+$'
+        eventType:
+          $ref: '#/components/schemas/WebhookEventType'
+        attemptNumber:
+          type: integer
+          minimum: 1
+        success:
+          type: boolean
+        responseCode:
+          type: integer
+          nullable: true
+          description: HTTP status code returned by the merchant's endpoint, null if the request itself failed (timeout/DNS/TLS).
+        durationMs:
+          type: integer
+          nullable: true
+        attemptedAt:
+          type: string
+          format: date-time
+        nextRetryAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the next automatic retry is scheduled; null if succeeded or the 24h retry window has elapsed.
+
+    DeliveryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Delivery'
+
+    DeliveryListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Delivery'
+        meta:
+          $ref: '#/components/schemas/PageMeta'

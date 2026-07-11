@@ -1,0 +1,308 @@
+openapi: 3.1.0
+info:
+  title: RoomBoard Bookings API
+  version: 2.1.0
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+  description: >
+    Meeting-room booking API for RoomBoard tenants. Versioning: URL prefix
+    (/v2). Conventions: snake_case properties, page-based pagination
+    (`page` + `per_page`), RFC 9457 problem+json errors, UUID identifiers,
+    RFC 3339 UTC timestamps. Authentication: bearer tokens on every endpoint.
+    Consumed in production by the RoomBoard iOS app, the Android app, and
+    11 third-party calendar integrations.
+servers:
+  - url: https://api.roomboard.dev/v2
+security:
+  - bearerAuth: []
+tags:
+  - name: bookings
+    description: Booking operations.
+paths:
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [bookings]
+      summary: List bookings
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: venue_id
+          in: query
+          required: false
+          description: Filter bookings to one venue.
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          description: Filter by booking status.
+          schema:
+            type: string
+            enum: [pending, confirmed, cancelled]
+      responses:
+        '200':
+          description: A page of bookings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Booking'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createBooking
+      tags: [bookings]
+      summary: Create a booking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCreate'
+      responses:
+        '201':
+          description: Booking created.
+          headers:
+            Location:
+              description: URL of the created booking.
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /bookings/{bookingId}:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+    get:
+      operationId: getBooking
+      tags: [bookings]
+      summary: Get a booking
+      responses:
+        '200':
+          description: The booking.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateBooking
+      tags: [bookings]
+      summary: Update a booking (partial, JSON merge patch semantics)
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/BookingUpdate'
+      responses:
+        '200':
+          description: The updated booking.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      operationId: deleteBooking
+      tags: [bookings]
+      summary: Cancel and delete a booking
+      responses:
+        '204':
+          description: Booking deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 1-based page number.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      required: false
+      description: Page size (1-100, default 25).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      description: Booking identifier.
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: The request is malformed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Authentication is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: The booking conflicts with an existing booking.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    UnprocessableEntity:
+      description: The request is well-formed but semantically invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+    Pagination:
+      type: object
+      required: [page, per_page, total]
+      properties:
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total:
+          type: integer
+    Booking:
+      type: object
+      required: [id, venue_id, room_id, start_time, end_time, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        venue_id:
+          type: string
+          format: uuid
+        room_id:
+          type: string
+          format: uuid
+        organizer_email:
+          type: string
+          format: email
+        start_time:
+          type: string
+          format: date-time
+          description: Booking start, UTC.
+        end_time:
+          type: string
+          format: date-time
+          description: Booking end, UTC.
+        status:
+          type: string
+          enum: [pending, confirmed, cancelled]
+        notes:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    BookingCreate:
+      type: object
+      required: [venue_id, room_id, start_time, end_time]
+      properties:
+        venue_id:
+          type: string
+          format: uuid
+        room_id:
+          type: string
+          format: uuid
+        organizer_email:
+          type: string
+          format: email
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        notes:
+          type: string
+    BookingUpdate:
+      type: object
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, confirmed, cancelled]
+        notes:
+          type: string
